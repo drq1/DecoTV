@@ -1,41 +1,123 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 'use client';
 
-import { AlertCircle, CheckCircle } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 
 import { CURRENT_VERSION } from '@/lib/version';
-import { checkForUpdates, UpdateStatus } from '@/lib/version_check';
+import {
+  checkForUpdates,
+  UpdateStatus,
+  VersionCheckResult,
+} from '@/lib/version_check';
 
 import { useSite } from '@/components/SiteProvider';
 import { ThemeToggle } from '@/components/ThemeToggle';
 
+// 状态指示器光点组件
+function StatusIndicator({ status }: { status: UpdateStatus }) {
+  // 根据状态返回不同颜色的光点
+  const getIndicatorStyle = () => {
+    switch (status) {
+      case UpdateStatus.NO_UPDATE:
+        // 绿色光点 - 最新版本
+        return {
+          bgColor: 'bg-emerald-500',
+          glowColor: 'shadow-emerald-500/50',
+          pulseColor: 'bg-emerald-400',
+        };
+      case UpdateStatus.HAS_UPDATE:
+        // 橙色光点 - 有更新
+        return {
+          bgColor: 'bg-orange-500',
+          glowColor: 'shadow-orange-500/50',
+          pulseColor: 'bg-orange-400',
+        };
+      case UpdateStatus.FETCH_FAILED:
+        // 红色光点 - 检测失败
+        return {
+          bgColor: 'bg-red-500',
+          glowColor: 'shadow-red-500/50',
+          pulseColor: 'bg-red-400',
+        };
+      case UpdateStatus.CHECKING:
+      default:
+        // 灰色光点 - 检测中
+        return {
+          bgColor: 'bg-gray-400',
+          glowColor: 'shadow-gray-400/50',
+          pulseColor: 'bg-gray-300',
+        };
+    }
+  };
+
+  const style = getIndicatorStyle();
+
+  return (
+    <span className='relative flex h-2.5 w-2.5'>
+      {/* 脉冲动画 */}
+      {status !== UpdateStatus.CHECKING && (
+        <span
+          className={`animate-ping absolute inline-flex h-full w-full rounded-full ${style.pulseColor} opacity-75`}
+        />
+      )}
+      {/* 核心光点 */}
+      <span
+        className={`relative inline-flex rounded-full h-2.5 w-2.5 ${style.bgColor} shadow-lg ${style.glowColor}`}
+      />
+    </span>
+  );
+}
+
 // 版本显示组件
 function VersionDisplay() {
-  const [updateStatus, setUpdateStatus] = useState<{
-    status: UpdateStatus;
-    currentTimestamp?: string;
-    remoteTimestamp?: string;
-  } | null>(null);
-  const [isChecking, setIsChecking] = useState(true);
+  const [checkResult, setCheckResult] = useState<VersionCheckResult | null>(
+    null,
+  );
+  const [status, setStatus] = useState<UpdateStatus>(UpdateStatus.CHECKING);
 
   useEffect(() => {
-    const checkUpdate = async () => {
+    const doCheck = async () => {
       try {
-        const status = await checkForUpdates();
-        setUpdateStatus(status);
-      } catch (_) {
-        // do nothing
-      } finally {
-        setIsChecking(false);
+        const result = await checkForUpdates();
+        setCheckResult(result);
+        setStatus(result.status);
+      } catch {
+        setStatus(UpdateStatus.FETCH_FAILED);
       }
     };
 
-    checkUpdate();
+    doCheck();
   }, []);
+
+  // 获取状态文字
+  const getStatusText = () => {
+    switch (status) {
+      case UpdateStatus.NO_UPDATE:
+        return '当前为最新版本';
+      case UpdateStatus.HAS_UPDATE:
+        return '有新版本可用';
+      case UpdateStatus.FETCH_FAILED:
+        return '检测失败';
+      case UpdateStatus.CHECKING:
+      default:
+        return '检测中...';
+    }
+  };
+
+  // 获取状态文字颜色
+  const getStatusTextColor = () => {
+    switch (status) {
+      case UpdateStatus.NO_UPDATE:
+        return 'text-emerald-600 dark:text-emerald-400';
+      case UpdateStatus.HAS_UPDATE:
+        return 'text-orange-600 dark:text-orange-400';
+      case UpdateStatus.FETCH_FAILED:
+        return 'text-red-500 dark:text-red-400';
+      default:
+        return 'text-gray-500 dark:text-gray-400';
+    }
+  };
 
   return (
     <button
@@ -44,37 +126,36 @@ function VersionDisplay() {
           (process.env.NEXT_PUBLIC_REPO_URL as string) ||
             (process.env.NEXT_PUBLIC_UPDATE_REPO
               ? `https://github.com/${process.env.NEXT_PUBLIC_UPDATE_REPO}`
-              : '#'),
-          '_blank'
+              : 'https://github.com/Decohererk/DecoTV'),
+          '_blank',
         )
       }
-      className='absolute bottom-4 left-1/2 transform -translate-x-1/2 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 transition-colors cursor-pointer'
+      className='absolute bottom-4 left-1/2 transform -translate-x-1/2 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 transition-all duration-300 cursor-pointer hover:scale-105 group'
+      title={
+        checkResult?.formattedLocalTime
+          ? `本地版本: ${checkResult.formattedLocalTime}${
+              checkResult?.formattedRemoteTime
+                ? `\n远程版本: ${checkResult.formattedRemoteTime}`
+                : ''
+            }`
+          : '点击查看仓库'
+      }
     >
-      <span className='font-mono'>v{CURRENT_VERSION}</span>
-      {!isChecking && updateStatus?.status !== UpdateStatus.FETCH_FAILED && (
-        <div
-          className={`flex items-center gap-1.5 ${
-            updateStatus?.status === UpdateStatus.HAS_UPDATE
-              ? 'text-yellow-600 dark:text-yellow-400'
-              : updateStatus?.status === UpdateStatus.NO_UPDATE
-              ? 'text-purple-500 dark:text-purple-400'
-              : ''
-          }`}
-        >
-          {updateStatus?.status === UpdateStatus.HAS_UPDATE && (
-            <>
-              <AlertCircle className='w-3.5 h-3.5' />
-              <span className='font-semibold text-xs'>有新版本</span>
-            </>
-          )}
-          {updateStatus?.status === UpdateStatus.NO_UPDATE && (
-            <>
-              <CheckCircle className='w-3.5 h-3.5' />
-              <span className='font-semibold text-xs'>当前为最新版本</span>
-            </>
-          )}
-        </div>
-      )}
+      {/* 版本号带光点指示器 */}
+      <span className='relative font-mono font-medium'>
+        v{CURRENT_VERSION}
+        {/* 右上角光点 */}
+        <span className='absolute -top-1 -right-3'>
+          <StatusIndicator status={status} />
+        </span>
+      </span>
+
+      {/* 状态文字 */}
+      <span
+        className={`font-semibold text-xs ml-2 transition-colors ${getStatusTextColor()}`}
+      >
+        {getStatusText()}
+      </span>
     </button>
   );
 }
@@ -100,7 +181,7 @@ function LoginPageClient() {
         const storageType = data.StorageType;
         setShouldAskUsername(!!storageType && storageType !== 'localstorage');
         setRegistrationEnabled(
-          data.EnableRegistration && storageType !== 'localstorage'
+          data.EnableRegistration && storageType !== 'localstorage',
         );
       })
       .catch(() => {
@@ -136,7 +217,7 @@ function LoginPageClient() {
         const data = await res.json().catch(() => ({}));
         setError(data.error ?? '服务器错误');
       }
-    } catch (error) {
+    } catch {
       setError('网络错误，请稍后重试');
     } finally {
       setLoading(false);
@@ -146,7 +227,7 @@ function LoginPageClient() {
   return (
     <div className='relative min-h-screen flex items-center justify-center px-4 overflow-hidden login-bg'>
       {/* Animated background gradient */}
-      <div className='absolute inset-0 bg-gradient-to-br from-purple-900/20 via-blue-900/20 to-pink-900/20 dark:from-purple-900/40 dark:via-blue-900/40 dark:to-pink-900/40 animate-gradient-shift'></div>
+      <div className='absolute inset-0 bg-linear-to-br from-purple-900/20 via-blue-900/20 to-pink-900/20 dark:from-purple-900/40 dark:via-blue-900/40 dark:to-pink-900/40 animate-gradient-shift'></div>
 
       {/* Floating orbs */}
       <div className='absolute top-1/4 left-1/4 w-32 h-32 bg-purple-500/30 rounded-full blur-xl animate-float-slow'></div>
@@ -157,7 +238,7 @@ function LoginPageClient() {
         <ThemeToggle />
       </div>
 
-      <div className='relative z-10 w-full max-w-md rounded-3xl bg-gradient-to-b from-white/90 via-white/70 to-white/40 dark:from-zinc-900/90 dark:via-zinc-900/70 dark:to-zinc-900/40 backdrop-blur-xl shadow-2xl p-10 dark:border dark:border-zinc-800 login-card'>
+      <div className='relative z-10 w-full max-w-md rounded-3xl bg-linear-to-b from-white/90 via-white/70 to-white/40 dark:from-zinc-900/90 dark:via-zinc-900/70 dark:to-zinc-900/40 backdrop-blur-xl shadow-2xl p-10 dark:border dark:border-zinc-800 login-card'>
         <h1 className='tracking-tight text-center text-4xl font-extrabold mb-8 bg-clip-text neon-text neon-flicker'>
           {siteName}
         </h1>
@@ -202,7 +283,7 @@ function LoginPageClient() {
           <button
             type='submit'
             disabled={!password || loading || (shouldAskUsername && !username)}
-            className='inline-flex w-full justify-center rounded-lg bg-gradient-to-r from-purple-600 via-fuchsia-600 to-pink-600 py-3 text-base font-semibold text-white shadow-lg transition-all duration-300 hover:brightness-110 hover:scale-105 disabled:cursor-not-allowed disabled:opacity-50 neon-pulse login-button'
+            className='inline-flex w-full justify-center rounded-lg bg-linear-to-r from-purple-600 via-fuchsia-600 to-pink-600 py-3 text-base font-semibold text-white shadow-lg transition-all duration-300 hover:brightness-110 hover:scale-105 disabled:cursor-not-allowed disabled:opacity-50 neon-pulse login-button'
           >
             {loading ? '登录中...' : '登录'}
           </button>
