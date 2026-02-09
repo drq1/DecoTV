@@ -1,5 +1,32 @@
 import { NextRequest } from 'next/server';
 
+// 单例缓存，避免重复打印警告
+let cachedSecret: string | null | undefined;
+let warnedMissingSecret = false;
+
+// 统一获取鉴权密钥，Docker/开发环境缺失时给出警告，并在非生产环境提供安全性有限的后备值
+export function getAuthSecret(): string | null {
+  if (cachedSecret !== undefined) return cachedSecret;
+
+  const secret = process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET;
+  if (!secret) {
+    const isProd = process.env.NODE_ENV === 'production';
+    if (!warnedMissingSecret) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        'WARNING: NEXTAUTH_SECRET/AUTH_SECRET is missing. Docker 部署请通过 -e AUTH_SECRET=... 注入，生成命令: openssl rand -base64 32',
+      );
+      warnedMissingSecret = true;
+    }
+    // 仅非生产环境提供后备，防止本地/Docker 开发直接 401
+    cachedSecret = isProd ? null : 'dev-fallback-secret-do-not-use-in-prod';
+    return cachedSecret;
+  }
+
+  cachedSecret = secret;
+  return secret;
+}
+
 // 从cookie获取认证信息 (服务端使用)
 export function getAuthInfoFromCookie(request: NextRequest): {
   password?: string;
@@ -72,4 +99,60 @@ export function getAuthInfoFromBrowserCookie(): {
   } catch {
     return null;
   }
+}
+
+/**
+ * 验证 API 请求的认证信息
+ * 统一处理 localstorage 模式和数据库模式的认证差异
+ *
+ * @param request NextRequest 对象
+ * @returns 验证结果，包含是否通过、用户名（可选）、角色、是否为站长
+ */
+export function verifyApiAuth(request: NextRequest): {
+  isValid: boolean;
+  username?: string;
+  role?: 'owner' | 'admin' | 'user';
+  isOwner: boolean;
+  isLocalMode: boolean;
+} {
+  const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
+  const hasRedis = !!(process.env.REDIS_URL || process.env.KV_REST_API_URL);
+  const isLocalMode = storageType === 'localstorage' && !hasRedis;
+
+  const authInfo = getAuthInfoFromCookie(request);
+
+  // 无认证信息
+  if (!authInfo) {
+    return { isValid: false, isOwner: false, isLocalMode };
+  }
+
+  // localstorage 模式：验证密码
+  if (isLocalMode) {
+    const envPassword = process.env.PASSWORD;
+    // 未设置密码时直接通过
+    if (!envPassword) {
+      return { isValid: true, role: 'owner', isOwner: true, isLocalMode };
+    }
+    // 验证密码
+    if (authInfo.password && authInfo.password === envPassword) {
+      return { isValid: true, role: 'owner', isOwner: true, isLocalMode };
+    }
+    return { isValid: false, isOwner: false, isLocalMode };
+  }
+
+  // 数据库模式：需要 username 和 signature
+  if (!authInfo.username || !authInfo.signature) {
+    return { isValid: false, isOwner: false, isLocalMode };
+  }
+
+  // 判断是否为站长
+  const isOwner = authInfo.username === process.env.USERNAME;
+
+  return {
+    isValid: true,
+    username: authInfo.username,
+    role: (authInfo as { role?: 'owner' | 'admin' | 'user' }).role || 'user',
+    isOwner,
+    isLocalMode,
+  };
 }
