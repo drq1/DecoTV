@@ -6,7 +6,13 @@ import { getAuthInfoFromCookie, verifyApiAuth } from '@/lib/auth';
 import { toSimplified } from '@/lib/chinese';
 import { getAvailableApiSites, getConfig } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
+import { rewriteEpisodesForAdFilterMany } from '@/lib/episode-rewriter';
 import { rankSearchResults } from '@/lib/search-ranking';
+import {
+  buildResolutionFilterFromSearchParams,
+  filterSearchResultsByResolution,
+  formatResolutionLabel,
+} from '@/lib/video-quality';
 import { yellowWords } from '@/lib/yellow';
 
 export const runtime = 'nodejs';
@@ -25,6 +31,7 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const query = searchParams.get('q');
+  const resolutionFilter = buildResolutionFilterFromSearchParams(searchParams);
 
   if (!query) {
     return new Response(JSON.stringify({ error: '搜索关键词不能为空' }), {
@@ -88,6 +95,12 @@ export async function GET(request: NextRequest) {
         query,
         normalizedQuery,
         totalSources: apiSites.length,
+        resolutionFilter: resolutionFilter.minLevel
+          ? {
+              minResolution: formatResolutionLabel(resolutionFilter.minLevel),
+              strict: resolutionFilter.strict,
+            }
+          : null,
         timestamp: Date.now(),
       })}\n\n`;
 
@@ -119,16 +132,21 @@ export async function GET(request: NextRequest) {
           );
 
           const resultsArrays = await Promise.all(siteResultsPromises);
-          // 展平并去重
-          let results = resultsArrays.flat() as any[];
+          // NOTE: 展平并去重 —— 强制过滤 null/undefined，防止上游返回非标准结构
+          let results = resultsArrays
+            .flat()
+            .filter(
+              (r: any) => r != null && typeof r === 'object' && r.id,
+            ) as any[];
           const uniqueMap = new Map();
           results.forEach((r) => uniqueMap.set(r.id, r));
           results = Array.from(uniqueMap.values());
 
           // 成人内容过滤
-          let filteredResults = results;
+          let filteredResults: any[] = results;
           if (!config.SiteConfig.DisableYellowFilter) {
-            filteredResults = results.filter((result) => {
+            filteredResults = (results ?? []).filter((result: any) => {
+              if (!result) return false;
               const typeName = result.type_name || '';
               // 检查源是否标记为成人资源
               if (site.is_adult) {
@@ -141,18 +159,40 @@ export async function GET(request: NextRequest) {
             });
           }
 
+          // NOTE: 无论过滤结果如何，确保 filteredResults 始终为有效数组
+          filteredResults = Array.isArray(filteredResults)
+            ? filteredResults
+            : [];
+
           // 🎯 智能排序：按相关性对该源的结果排序
-          filteredResults = rankSearchResults(filteredResults, normalizedQuery);
+          try {
+            filteredResults = rankSearchResults(
+              filteredResults,
+              normalizedQuery,
+            );
+          } catch (rankError) {
+            console.warn(`排序失败 ${site.name}:`, rankError);
+            // 排序失败时保持过滤后的原始顺序
+          }
+
+          filteredResults = filterSearchResultsByResolution(
+            filteredResults,
+            resolutionFilter,
+          );
 
           // 发送该源的搜索结果
           completedSources++;
 
           if (!streamClosed) {
+            const rewrittenResults = await rewriteEpisodesForAdFilterMany(
+              filteredResults,
+              request,
+            );
             const sourceEvent = `data: ${JSON.stringify({
               type: 'source_result',
               source: site.key,
               sourceName: site.name,
-              results: filteredResults,
+              results: rewrittenResults,
               timestamp: Date.now(),
             })}\n\n`;
 
