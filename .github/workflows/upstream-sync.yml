@@ -1,0 +1,40 @@
+name: Upstream Sync
+
+permissions:
+  contents: write
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # every day at 00:00 UTC
+  workflow_dispatch:
+
+jobs:
+  sync_latest_from_upstream:
+    name: Sync latest commits from upstream repo
+    runs-on: ubuntu-latest
+    # 仅在仓库是 fork 时执行；drq1/DecoTV 已 fork 自 Decohererk/DecoTV，保留该条件。若你想在非 fork 仓库也运行，请移除以下 if
+    if: ${{ github.event.repository.fork }}
+
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v6
+        with:
+          # 使用 false 以便不使用默认 GITHUB_TOKEN，从而可以用 PAT 触发下游 workflows
+          persist-credentials: false
+
+      - name: Sync upstream changes
+        id: sync
+        uses: aormsby/fork-sync-with-upstream-action@v3.4.3
+        with:
+          upstream_sync_repo: Decohererk/DecoTV
+          upstream_sync_branch: main
+          target_sync_branch: main
+          # 请在仓库 Settings → Secrets → Actions 中添加名为 PAT_TOKEN 的 Personal Access Token
+          target_repo_token: ${{ secrets.PAT_TOKEN }}
+          upstream_pull_args: --allow-unrelated-histories -X theirs
+          test_mode: false
+
+      - name: Sync check
+        if: failure()
+        run: |
+          echo "[Error] 同步失败，请手动处理"
