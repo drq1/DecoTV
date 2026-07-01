@@ -11,6 +11,7 @@ import React, {
 import {
   comparePlaybackMetrics,
   getPlaybackEvidenceTier,
+  hasMeasuredMediaThroughput,
   isVerifiedPlaybackResult,
 } from '@/lib/player/source-ranking';
 import { SearchResult } from '@/lib/types';
@@ -79,9 +80,7 @@ function compareLatencySourceOrder(a: SourceSortItem, b: SourceSortItem) {
 
 function formatResponseTime(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) return '未测得';
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.round(ms / 1000)}s`;
+  return `${Math.round(ms)}ms`;
 }
 
 function getLatencyTextClassName(pingTime: number) {
@@ -408,6 +407,38 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
     [sourceItems],
   );
 
+  const connectedSourceCount = useMemo(
+    () =>
+      sourceItems.filter(
+        (item) =>
+          item.videoInfo &&
+          !item.videoInfo.hasError &&
+          item.videoInfo.failureKind !== 'resolver' &&
+          item.videoInfo.failureKind !== 'timeout' &&
+          !(
+            item.videoInfo.failureKind === 'manifest' &&
+            !item.videoInfo.playable
+          ) &&
+          (item.videoInfo.status === 'partial' || item.videoInfo.pingTime > 0),
+      ).length,
+    [sourceItems],
+  );
+
+  const pendingSourceCount = useMemo(
+    () =>
+      sourceItems.filter(
+        (item) =>
+          item.videoInfo &&
+          !item.videoInfo.hasError &&
+          item.videoInfo.status === 'partial' &&
+          (item.videoInfo.failureKind === 'resolver' ||
+            item.videoInfo.failureKind === 'timeout' ||
+            (item.videoInfo.failureKind === 'manifest' &&
+              !item.videoInfo.playable)),
+      ).length,
+    [sourceItems],
+  );
+
   const displaySourceItems = useMemo(() => {
     const items = [...sourceItems];
     items.sort(
@@ -429,18 +460,26 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
       if (bestPlaybackItem?.videoInfo) {
         const startupText =
           typeof bestPlaybackItem.videoInfo.startupTimeMs === 'number'
-            ? `首片 ${formatResponseTime(
+            ? `延迟 ${formatResponseTime(
                 bestPlaybackItem.videoInfo.startupTimeMs,
               )}`
-            : `仅响应 ${formatResponseTime(
-                bestPlaybackItem.videoInfo.pingTime,
-              )}`;
+            : `响应 ${formatResponseTime(bestPlaybackItem.videoInfo.pingTime)}`;
         const speedText =
           bestPlaybackItem.videoInfo.loadSpeed !== '未知'
             ? ` · 速度 ${bestPlaybackItem.videoInfo.loadSpeed}`
             : '';
-        return `最佳首播 ${startupText}${speedText} · ${bestPlaybackItem.source.source_name}`;
+        return `最佳播放源 ${startupText}${speedText} · ${bestPlaybackItem.source.source_name}`;
       }
+      if (connectedSourceCount > 0) {
+        return failedSourceCount > 0
+          ? `已连通 ${connectedSourceCount} 个源，部分源未完成分片测速`
+          : `已连通 ${connectedSourceCount} 个源，等待分片测速`;
+      }
+
+      if (pendingSourceCount > 0) {
+        return `${pendingSourceCount} 个源待播放验证`;
+      }
+
       return failedSourceCount > 0
         ? '测速完成，暂无可播放媒体样本'
         : '等待首播数据';
@@ -476,6 +515,29 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
       };
     }
 
+    if (videoInfo.status === 'partial') {
+      if (videoInfo.failureKind === 'resolver') {
+        return {
+          label: '待解析',
+          className: 'text-amber-600 dark:text-amber-300',
+        };
+      }
+
+      if (videoInfo.failureKind === 'timeout') {
+        return {
+          label: '待验证',
+          className: 'text-amber-600 dark:text-amber-300',
+        };
+      }
+
+      if (videoInfo.failureKind === 'manifest' && !videoInfo.playable) {
+        return {
+          label: '待验证',
+          className: 'text-amber-600 dark:text-amber-300',
+        };
+      }
+    }
+
     if (videoInfo.quality && videoInfo.quality !== '未知') {
       const isUltraHigh = ['4K', '2K'].includes(videoInfo.quality);
       const isHigh = ['1080p', '720p'].includes(videoInfo.quality);
@@ -489,9 +551,16 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
       };
     }
 
+    if (hasMeasuredMediaThroughput(videoInfo)) {
+      return {
+        label: '可播',
+        className: 'text-green-600 dark:text-green-400',
+      };
+    }
+
     if (videoInfo.status === 'partial' || videoInfo.pingTime > 0) {
       return {
-        label: '仅连通',
+        label: '已连通',
         className: 'text-sky-600 dark:text-sky-300',
       };
     }
@@ -863,14 +932,18 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                                             videoInfo.startupTimeMs,
                                           )} font-medium text-xs`}
                                         >
-                                          首片{' '}
+                                          延迟{' '}
                                           {formatResponseTime(
                                             videoInfo.startupTimeMs,
                                           )}
                                         </div>
                                       ) : videoInfo.pingTime > 0 ? (
-                                        <div className='text-orange-600 dark:text-orange-400 font-medium text-xs'>
-                                          仅响应{' '}
+                                        <div
+                                          className={`${getLatencyTextClassName(
+                                            videoInfo.pingTime,
+                                          )} font-medium text-xs`}
+                                        >
+                                          响应{' '}
                                           {formatResponseTime(
                                             videoInfo.pingTime,
                                           )}
@@ -884,9 +957,22 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                                         >
                                           速度 {videoInfo.loadSpeed}
                                         </div>
+                                      ) : videoInfo.message &&
+                                        (videoInfo.failureKind === 'resolver' ||
+                                          videoInfo.failureKind === 'timeout' ||
+                                          (videoInfo.failureKind ===
+                                            'manifest' &&
+                                            !videoInfo.playable) ||
+                                          !videoInfo.pingTime) ? (
+                                        <div
+                                          className='truncate text-amber-600 dark:text-amber-300 font-medium text-xs'
+                                          title={videoInfo.message}
+                                        >
+                                          {videoInfo.message}
+                                        </div>
                                       ) : (
-                                        <div className='text-gray-500 dark:text-gray-400 font-medium text-xs'>
-                                          未取得媒体分片
+                                        <div className='text-sky-600 dark:text-sky-300 font-medium text-xs'>
+                                          已连通，待分片测速
                                         </div>
                                       )}
                                     </div>
